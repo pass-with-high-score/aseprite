@@ -10,11 +10,11 @@
 #   ./build.sh --create-dmg
 #   ./build.sh --init-submodules
 #   ./build.sh --create-scripts
+#   ./build.sh --clone [destination]
 #   ./build.sh --help
 #
 # If you run this script without parameters, you will be able to
-# follows the instructions and a configuration will be stored in a
-# ".build" directory.
+# answer several questions to configure the build.
 #
 # Options:
 #
@@ -26,16 +26,101 @@
 #   --create-dmg      Creates a DMG installer for macOS builds
 #   --help            Displays this help message
 #   --init-submodules Initializes and updates all Git submodules
+#   --create-scripts  Creates run scripts for Windows, Linux, and macOS
+#   --clone           Clones the Aseprite repository from GitHub and sets up
+#                     with our custom build script
 #
 
 echo "======================= BUILD ASEPRITE HELPER ========================"
 
-# Check that we are running the script from the Aseprite clone directory.
-pwd=$(pwd)
-if [[ ! -f "$pwd/EULA.txt" || ! -f "$pwd/.gitmodules" ]] ; then
-    echo ""
-    echo "Run build script from the Aseprite directory"
-    exit 1
+# Check if this is a custom build script by checking for a specific line/function we added
+is_custom_script=0
+if grep -q "create_run_scripts" "$0"; then
+  is_custom_script=1
+fi
+
+# Clone Aseprite and set up with our custom build script
+if [ "$1" == "--clone" ] ; then
+    if ! command -v git &> /dev/null; then
+        echo "Error: Git is not installed. Please install Git and try again."
+        exit 1
+    fi
+    
+    # Determine destination directory
+    dest_dir="$2"
+    if [ -z "$dest_dir" ]; then
+        dest_dir="aseprite"
+    fi
+    
+    # Check if destination directory already exists
+    if [ -d "$dest_dir" ]; then
+        echo "Error: Destination directory '$dest_dir' already exists."
+        echo "Please choose a different directory or remove the existing one."
+        exit 1
+    fi
+    
+    echo "Cloning Aseprite repository into $dest_dir..."
+    if ! git clone https://github.com/aseprite/aseprite.git "$dest_dir"; then
+        echo "Error: Failed to clone Aseprite repository."
+        exit 1
+    fi
+    
+    echo "Setting up custom build script..."
+    # Copy our build script to the cloned repository if they're different
+    if ! cmp -s "$0" "$dest_dir/build.sh"; then
+        cp "$0" "$dest_dir/build.sh"
+        chmod +x "$dest_dir/build.sh"
+    else
+        echo "build.sh is identical, not copying"
+    fi
+    
+    # Initialize and update all submodules
+    cd "$dest_dir" || exit 1
+    echo "Initializing submodules..."
+    if ! git submodule update --init --recursive; then
+        echo "Error: Failed to initialize submodules."
+        exit 1
+    fi
+    
+    # Fix CMake requirements by calling the existing fix-cmake function
+    echo "Updating CMake requirements in third-party libraries..."
+    ./build.sh --fix-cmake
+    
+    # Create platform-specific run scripts
+    echo "Creating platform-specific run scripts..."
+    
+    # Create Windows batch file (run_aseprite.bat)
+    cat > "run_aseprite.bat" << EOF
+@echo off
+rem Run Aseprite from the build directory
+echo Running Aseprite...
+cd "%~dp0"
+bin\\aseprite.exe %*
+EOF
+    chmod +x "run_aseprite.bat"
+    
+    # Create Linux shell script (run_aseprite.sh)
+    cat > "run_aseprite.sh" << EOF
+#!/bin/bash
+# Run Aseprite from the build directory
+echo "Running Aseprite..."
+cd "\$(dirname "\$0")"
+./bin/aseprite "\$@"
+EOF
+    chmod +x "run_aseprite.sh"
+    
+    # Create macOS shell script (run_aseprite_mac.sh)
+    cat > "run_aseprite_mac.sh" << EOF
+#!/bin/bash
+# Run Aseprite from the build directory on macOS
+echo "Running Aseprite..."
+cd "\$(dirname "\$0")"
+./bin/aseprite "\$@"
+EOF
+    chmod +x "run_aseprite_mac.sh"
+    
+    echo "Setup completed. To build Aseprite, navigate to $dest_dir and run './build.sh --auto'"
+    exit 0
 fi
 
 # Display help information
@@ -55,6 +140,9 @@ if [ "$1" == "--help" ] || [ "$1" == "-h" ] ; then
     echo "                            Optional: Specify version (e.g., --fix-cmake 3.12)"
     echo "  --create-dmg              Create a DMG installer for macOS builds"
     echo "  --init-submodules         Initialize and update all Git submodules"
+    echo "  --create-scripts          Create run scripts for Windows, Linux, and macOS"
+    echo "  --clone [destination]     Clone Aseprite from GitHub and set up with custom build script"
+    echo "                            Optional: Specify destination directory (default: aseprite)"
     echo "  --help, -h                Display this help message"
     echo ""
     echo "Examples:"
@@ -64,11 +152,13 @@ if [ "$1" == "--help" ] || [ "$1" == "-h" ] ; then
     echo "  ./build.sh --auto --norun         # Automatic build without running Aseprite afterward"
     echo "  ./build.sh --fix-cmake 3.12       # Update CMake version to 3.12 in third-party libraries"
     echo "  ./build.sh --create-dmg           # Create a DMG installer for macOS (after building)"
+    echo "  ./build.sh --create-scripts       # Create run scripts for all platforms"
+    echo "  ./build.sh --clone aseprite-build # Clone Aseprite to aseprite-build directory"
     echo ""
     echo "Recommended workflow for new clones:"
     echo ""
-    echo "  1. ./build.sh --init-submodules   # Initialize all required submodules"
-    echo "  2. ./build.sh --fix-cmake         # Fix CMake version requirements"
+    echo "  1. ./build.sh --clone my-aseprite # Clone repository to my-aseprite"
+    echo "  2. cd my-aseprite                 # Change to the cloned directory"
     echo "  3. ./build.sh --auto --norun      # Build Aseprite automatically"
     echo "  4. ./build.sh --create-dmg        # (macOS only) Create DMG installer"
     echo ""
@@ -79,6 +169,16 @@ if [ "$1" == "--help" ] || [ "$1" == "-h" ] ; then
     echo "  - Linux: Builds with standard compilation tools"
     echo ""
     exit 0
+fi
+
+# Check that we are running the script from the Aseprite clone directory,
+# but skip this check for --help, -h and --clone commands which don't require it
+pwd=$(pwd)
+if [[ "$1" != "--help" && "$1" != "-h" && "$1" != "--clone" && (! -f "$pwd/EULA.txt" || ! -f "$pwd/.gitmodules") ]] ; then
+    echo ""
+    echo "Run build script from the Aseprite directory"
+    echo "Or use --help for more information"
+    exit 1
 fi
 
 # Initialize submodules
@@ -645,7 +745,7 @@ if [ ! -f "$pwd/.build/userkind" ] ; then
         echo "  [U]ser: give a try to Aseprite"
         echo "  [D]eveloper: develop/modify Aseprite"
         echo ""
-        read -sN 1 -p "[U/D]? "
+        read -p "[U/D]? " REPLY
         echo ""
         if [[ "$REPLY" == "d" || "$REPLY" == "D" ]] ; then
             echo "developer" > $pwd/.build/userkind
@@ -937,7 +1037,7 @@ if [ ! -d "$skia_library_dir" ] ; then
     echo "Skia library wasn't found."
     echo ""
     if [ ! $auto ] ; then
-        read -sN 1 -p "Download pre-compiled Skia automatically [Y/n]? "
+        read -p "Download pre-compiled Skia automatically [Y/n]? " REPLY
     fi
     if [[ $auto || "$REPLY" == "" || "$REPLY" == "y" || "$REPLY" == "Y" ]] ; then
         if [[ $is_win && "$build_type" == "Debug" ]] ; then
@@ -985,7 +1085,7 @@ if [ ! -f "$active_build_dir/ninja.build" ] ; then
     echo "This will take some minutes."
     echo ""
     if [ ! $auto ] ; then
-        read -sN 1 -p "Press any key to continue. "
+        read -p "Press any key to continue. " REPLY
     fi
 
     if [ $is_macos ] ; then
